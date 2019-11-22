@@ -1,36 +1,43 @@
-
 //
-// SmoothScroll (Balazs Galambosi)
+// SmoothScroll for websites v1.4.10 (Balazs Galambosi)
+// http://www.smoothscroll.net/
+//
 // Licensed under the terms of the MIT license.
-// The only restriction would be not to publish any  
+//
+// You may use it in your theme if you credit me. 
+// It is also free to use on any individual website.
+//
+// Exception:
+// The only restriction is to not publish any  
 // extension for browsers or native application
 // without getting a written permission first.
 //
 
+(function () {
+  
 // Scroll Variables (tweakable)
 var defaultOptions = {
 
     // Scrolling Core
     frameRate        : 150, // [Hz]
-    animationTime    : 400, // [px]
+    animationTime    : 400, // [ms]
     stepSize         : 100, // [px]
 
     // Pulse (less tweakable)
-    // ratio of 'tail' to 'acceleration'
+    // ratio of "tail" to "acceleration"
     pulseAlgorithm   : true,
     pulseScale       : 4,
     pulseNormalize   : 1,
 
     // Acceleration
-    accelerationDelta : 50,  // 20
-    accelerationMax   : 3,   // 1
+    accelerationDelta : 50,  // 50
+    accelerationMax   : 3,   // 3
 
     // Keyboard Settings
     keyboardSupport   : true,  // option
-    arrowScroll       : 50,     // [px]
+    arrowScroll       : 50,    // [px]
 
     // Other
-    touchpadSupport   : false,
     fixedBackground   : true, 
     excluded          : ''    
 };
@@ -46,28 +53,14 @@ var initDone  = false;
 var root = document.documentElement;
 var activeElement;
 var observer;
+var refreshSize;
 var deltaBuffer = [];
 var deltaBufferTimer;
 var isMac = /^Mac/.test(navigator.platform);
-var isWin = /Windows/i.test(navigator.userAgent);
 
 var key = { left: 37, up: 38, right: 39, down: 40, spacebar: 32, 
             pageup: 33, pagedown: 34, end: 35, home: 36 };
 var arrowKeys = { 37: 1, 38: 1, 39: 1, 40: 1 };
-
-/***********************************************
- * SETTINGS
- ***********************************************/
-
-chrome.storage.sync.get(defaultOptions, function (syncedOptions) {
-
-    options = syncedOptions;
-
-    // it seems that sometimes settings come late
-    // and we need to test again for excluded pages
-    initTest();
-});
-
 
 /***********************************************
  * INITIALIZE
@@ -77,24 +70,8 @@ chrome.storage.sync.get(defaultOptions, function (syncedOptions) {
  * Tests if smooth scrolling is allowed. Shuts down everything if not.
  */
 function initTest() {
-
-    // disable keyboard support if the user said so
-    if (!options.keyboardSupport) {
-        removeEvent('keydown', keydown);
-    }
-
-    // disable everything if the page is blacklisted
-    if (options.excluded) {
-        var domains = options.excluded.split(/[,\n] ?/);
-        domains.push('mail.google.com'); // exclude Gmail for now
-        domains.push('play.google.com/music'); // problem with Polymer elements
-        for (var i = domains.length; i--;) {
-            if (document.URL.indexOf(domains[i]) > -1) {
-                isExcluded = true;
-                cleanup();
-                return;
-            }
-        }
+    if (options.keyboardSupport) {
+        addEvent('keydown', keydown);
     }
 }
 
@@ -102,13 +79,11 @@ function initTest() {
  * Sets up scrolls array, determines if frames are involved.
  */
 function init() {
-
-    if (initDone || isExcluded || !document.body) {
-        return;
-    }
+  
+    if (initDone || !document.body) return;
 
     initDone = true;
- 
+
     var body = document.body;
     var html = document.documentElement;
     var windowHeight = window.innerHeight; 
@@ -117,16 +92,58 @@ function init() {
     // check compat mode for root element
     root = (document.compatMode.indexOf('CSS') >= 0) ? html : body;
     activeElement = body;
+    
+    initTest();
 
     // Checks if this script is running in a frame
     if (top != self) {
         isFrame = true;
     }
 
-    // TODO: check if clearfix is still needed
-    else if (scrollHeight > windowHeight &&
-            (body.clientHeight + 1 < body.scrollHeight &&
-             html.clientHeight + 1 < html.scrollHeight)) {
+    /**
+     * Safari 10 fixed it, Chrome fixed it in v45:
+     * This fixes a bug where the areas left and right to 
+     * the content does not trigger the onmousewheel event
+     * on some pages. e.g.: html, body { height: 100% }
+     */
+    else if (isOldSafari &&
+             scrollHeight > windowHeight &&
+            (body.offsetHeight <= windowHeight || 
+             html.offsetHeight <= windowHeight)) {
+
+        var fullPageElem = document.createElement('div');
+        fullPageElem.style.cssText = 'position:absolute; z-index:-10000; ' +
+                                     'top:0; left:0; right:0; height:' + 
+                                      root.scrollHeight + 'px';
+        document.body.appendChild(fullPageElem);
+        
+        // DOM changed (throttled) to fix height
+        var pendingRefresh;
+        refreshSize = function () {
+            if (pendingRefresh) return; // could also be: clearTimeout(pendingRefresh);
+            pendingRefresh = setTimeout(function () {
+                if (isExcluded) return; // could be running after cleanup
+                fullPageElem.style.height = '0';
+                fullPageElem.style.height = root.scrollHeight + 'px';
+                pendingRefresh = null;
+            }, 500); // act rarely to stay fast
+        };
+  
+        setTimeout(refreshSize, 10);
+
+        addEvent('resize', refreshSize);
+
+        // TODO: attributeFilter?
+        var config = {
+            attributes: true, 
+            childList: true, 
+            characterData: false 
+            // subtree: true
+        };
+
+        observer = new MutationObserver(refreshSize);
+        observer.observe(body, config);
+
         if (root.offsetHeight <= windowHeight) {
             var clearfix = document.createElement('div');   
             clearfix.style.clear = 'both';
@@ -139,23 +156,6 @@ function init() {
         body.style.backgroundAttachment = 'scroll';
         html.style.backgroundAttachment = 'scroll';
     }
-
-    if (!isFrame) {
-        addEvent('message', function (e) {
-            if (e.data.SS == 'SmoothScroll') {
-                var wheelEvent = e.data;
-                wheelEvent.target = getFrameByEvent(e);
-                wheel(wheelEvent);
-            }
-        });
-    }
-}
-
-function getFrameByEvent(event) {
-  var iframes = document.getElementsByTagName('iframe');
-  return [].filter.call(iframes, function(iframe) {
-    return iframe.contentWindow === event.source;
-  })[0];
 }
 
 /**
@@ -166,20 +166,8 @@ function cleanup() {
     removeEvent(wheelEvent, wheel);
     removeEvent('mousedown', mousedown);
     removeEvent('keydown', keydown);
-}
-
-/**
- * Make sure we are the last listener on the page so special 
- * key event handlers (e.g for <video>) can come before us
- */
-function loaded() {
-    setTimeout(function () {
-        init();
-        if (options.keyboardSupport) {
-            removeEvent('keydown', keydown);
-            addEvent('keydown', keydown);
-        }
-    }, 1);
+    removeEvent('resize', refreshSize);
+    removeEvent('load', init);
 }
 
 
@@ -188,13 +176,14 @@ function loaded() {
  ************************************************/
  
 var que = [];
-var pending = null;
+var pending = false;
 var lastScroll = Date.now();
 
 /**
  * Pushes scroll actions to the scrolling queue.
  */
 function scrollArray(elem, left, top) {
+    
     directionCheck(left, top);
 
     if (options.accelerationMax != 1) {
@@ -220,14 +209,14 @@ function scrollArray(elem, left, top) {
         start: Date.now()
     });
         
-    // don't act if there's a pending frame loop
+    // don't act if there's a pending queue
     if (pending) {
         return;
     }  
 
     var scrollRoot = getScrollRoot();
     var isWindowScroll = (elem === scrollRoot || elem === document.body);
-
+    
     // if we haven't already fixed the behavior, 
     // and it needs fixing for this sesh
     if (elem.$scrollBehavior == null && isScrollBehaviorSmooth(elem)) {
@@ -273,11 +262,6 @@ function scrollArray(elem, left, top) {
             }           
         }
 
-        if (window.devicePixelRatio) {
-            //scrollX /= (window.devicePixelRatio;
-            //scrollY /= window.devicePixelRatio;
-        }
-
         // scroll left and top
         if (isWindowScroll) {
             window.scrollBy(scrollX, scrollY);
@@ -293,9 +277,9 @@ function scrollArray(elem, left, top) {
         }
         
         if (que.length) { 
-            pending = window.requestAnimationFrame(step); 
+            requestFrame(step, elem, (1000 / options.frameRate + 1)); 
         } else { 
-            pending = null;
+            pending = false;
             // restore default behavior at the end of scrolling sesh
             if (elem.$scrollBehavior != null) {
                 elem.style.scrollBehavior = elem.$scrollBehavior;
@@ -305,7 +289,8 @@ function scrollArray(elem, left, top) {
     };
     
     // start a new queue of actions
-    pending = window.requestAnimationFrame(step);
+    requestFrame(step, elem, 0);
+    pending = true;
 }
 
 
@@ -322,7 +307,7 @@ function wheel(event) {
     if (!initDone) {
         init();
     }
-
+    
     var target = event.target;
 
     // leave early if default action is prevented   
@@ -341,7 +326,7 @@ function wheel(event) {
 
     var deltaX = -event.wheelDeltaX || event.deltaX || 0;
     var deltaY = -event.wheelDeltaY || event.deltaY || 0;
-
+    
     if (isMac) {
         if (event.wheelDeltaX && isDivisible(event.wheelDeltaX, 120)) {
             deltaX = -120 * (event.wheelDeltaX / Math.abs(event.wheelDeltaX));
@@ -350,37 +335,34 @@ function wheel(event) {
             deltaY = -120 * (event.wheelDeltaY / Math.abs(event.wheelDeltaY));
         }
     }
-
+    
     // use wheelDelta if deltaX/Y is not available
     if (!deltaX && !deltaY) {
         deltaY = -event.wheelDelta || 0;
     }
 
-    // line based scrolling
+    // line based scrolling (Firefox mostly)
     if (event.deltaMode === 1) {
         deltaX *= 40;
         deltaY *= 40;
     }
 
-    // check if it's a touchpad scroll that should be ignored
-    if (!options.touchpadSupport && isTouchpad(deltaY)) {
-        return true;
-    }
-
-    var xOnly = (deltaX && !deltaY);
-    var overflowing = overflowingAncestor(target, xOnly);
+    var overflowing = overflowingAncestor(target);
 
     // nothing to do if there's no element that's scrollable
     if (!overflowing) {
-        // Chrome iframes seem to eat wheel events, which we need to 
-        // propagate up if the iframe has nothing overflowing to scroll
-        if (isFrame) {
-            event.preventDefault();
-            postScrollToParent(deltaX, deltaY);
+        // except Chrome iframes seem to eat wheel events, which we need to 
+        // propagate up, if the iframe has nothing overflowing to scroll
+        if (isFrame && isChrome)  {
             // change target to iframe element itself for the parent frame
-            //Object.defineProperty(event, "target", {value: window.frameElement});
-            //return parent.wheel(event);
+            Object.defineProperty(event, "target", {value: window.frameElement});
+            return parent.wheel(event);
         }
+        return true;
+    }
+    
+    // check if it's a touchpad scroll that should be ignored
+    if (isTouchpad(deltaY)) {
         return true;
     }
 
@@ -395,7 +377,7 @@ function wheel(event) {
     }
     
     scrollArray(overflowing, deltaX, deltaY);
-    if (event.preventDefault) event.preventDefault();
+    event.preventDefault();
     scheduleClearCache();
 }
 
@@ -408,9 +390,9 @@ function keydown(event) {
     var target   = event.target;
     var modifier = event.ctrlKey || event.altKey || event.metaKey || 
                   (event.shiftKey && event.keyCode !== key.spacebar);
-
+    
     // our own tracked active element could've been removed from the DOM
-    if (!document.contains(activeElement)) {
+    if (!document.body.contains(activeElement)) {
         activeElement = document.activeElement;
     }
 
@@ -442,18 +424,17 @@ function keydown(event) {
         arrowKeys[event.keyCode])  {
       return true;
     }
-
-    var xOnly = (event.keyCode == key.left || event.keyCode == key.right);
-    var overflowing = overflowingAncestor(activeElement, xOnly);
+    
+    var shift, x = 0, y = 0;
+    var overflowing = overflowingAncestor(activeElement);
 
     if (!overflowing) {
-        // iframes seem to eat key events, which we need to propagate up
-        // if the iframe has nothing overflowing to scroll
-        return isFrame ? parent.keydown(event) : true;
+        // Chrome iframes seem to eat key events, which we need to 
+        // propagate up, if the iframe has nothing overflowing to scroll
+        return (isFrame && isChrome) ? parent.keydown(event) : true;
     }
 
-    var clientHeight = overflowing.clientHeight;
-    var shift, x = 0, y = 0;
+    var clientHeight = overflowing.clientHeight; 
 
     if (overflowing == document.body) {
         clientHeight = window.innerHeight;
@@ -484,7 +465,7 @@ function keydown(event) {
         case key.end:
             var scroll = overflowing.scrollHeight - overflowing.scrollTop;
             var scrollRemaining = scroll - clientHeight;
-            y = (scrollRemaining > 0) ? scrollRemaining+10 : 0;
+            y = (scrollRemaining > 0) ? scrollRemaining + 10 : 0;
             break;
         case key.left:
             x = -options.arrowScroll;
@@ -512,7 +493,7 @@ function mousedown(event) {
 /***********************************************
  * OVERFLOW
  ***********************************************/
- 
+
 var uniqueID = (function () {
     var i = 0;
     return function (el) {
@@ -552,49 +533,43 @@ function getCache(el, x) {
 // scroll  |   no   |   YES   |   YES  |   YES  |
 // auto    |   no   |   YES   |   YES  |   YES  |
 
-function overflowingAncestor(el, x) {
+function overflowingAncestor(el) {
     var elems = [];
     var body = document.body;
     var rootScrollHeight = root.scrollHeight;
-    var rootScrollWidth  = root.scrollWidth;
     do {
-        var cached = getCache(el, x);
+        var cached = getCache(el, false);
         if (cached) {
-            return setCache(elems, cached, x);
+            return setCache(elems, cached);
         }
         elems.push(el);
-        if (x && rootScrollWidth  === el.scrollWidth ||
-           !x && rootScrollHeight === el.scrollHeight) {
-            var topOverflowsNotHidden = overflowNotHidden(root, x) && overflowNotHidden(body, x);
-            var isOverflowCSS = topOverflowsNotHidden || overflowAutoOrScroll(root, x);
-            if (isFrame && isContentOverflowing(root, x) || 
+        if (rootScrollHeight === el.scrollHeight) {
+            var topOverflowsNotHidden = overflowNotHidden(root) && overflowNotHidden(body);
+            var isOverflowCSS = topOverflowsNotHidden || overflowAutoOrScroll(root);
+            if (isFrame && isContentOverflowing(root) || 
                !isFrame && isOverflowCSS) {
-                return setCache(elems, getScrollRoot(), x); 
+                return setCache(elems, getScrollRoot()); 
             }
-        } else if (isContentOverflowing(el, x) && overflowAutoOrScroll(el, x)) {
-            return setCache(elems, el, x);
+        } else if (isContentOverflowing(el) && overflowAutoOrScroll(el)) {
+            return setCache(elems, el);
         }
     } while ((el = el.parentElement));
 }
 
-function isContentOverflowing(el, x) {
-    return x ? (el.clientWidth  + 10 < el.scrollWidth) 
-             : (el.clientHeight + 10 < el.scrollHeight);
-}
-
-function computedOverflow(el, x) {
-    var property = x ? 'overflow-x' : 'overflow-y';
-    return getComputedStyle(el, '').getPropertyValue(property);
+function isContentOverflowing(el) {
+    return (el.clientHeight + 10 < el.scrollHeight);
 }
 
 // typically for <body> and <html>
-function overflowNotHidden(el, x) {
-    return (computedOverflow(el, x) != 'hidden');
+function overflowNotHidden(el) {
+    var overflow = getComputedStyle(el, '').getPropertyValue('overflow-y');
+    return (overflow !== 'hidden');
 }
 
 // for all other elements
-function overflowAutoOrScroll(el, x) {
-    return /^(scroll|auto)$/.test(computedOverflow(el, x));
+function overflowAutoOrScroll(el) {
+    var overflow = getComputedStyle(el, '').getPropertyValue('overflow-y');
+    return (overflow === 'scroll' || overflow === 'auto');
 }
 
 // for all other elements
@@ -607,25 +582,17 @@ function isScrollBehaviorSmooth(el) {
     return smoothBehaviorForElement[id];
 }
 
-function postScrollToParent(deltaX, deltaY) {
-    parent.postMessage({
-        deltaX: deltaX,
-        deltaY: deltaY,
-        SS: 'SmoothScroll'
-    }, '*');
-}
-
 
 /***********************************************
  * HELPERS
  ***********************************************/
 
-function addEvent(type, fn) {
-    window.addEventListener(type, fn, false);
+function addEvent(type, fn, arg) {
+    window.addEventListener(type, fn, arg || false);
 }
 
-function removeEvent(type, fn) {
-    window.removeEventListener(type, fn, false);  
+function removeEvent(type, fn, arg) {
+    window.removeEventListener(type, fn, arg || false);  
 }
 
 function isNodeName(el, tag) {
@@ -640,9 +607,13 @@ function directionCheck(x, y) {
         direction.y = y;
         que = [];
         lastScroll = 0;
-        window.cancelAnimationFrame(pending);
-        pending = null;
     }
+}
+
+if (window.localStorage && localStorage.SS_deltaBuffer) {
+    try { // #46 Safari throws in private browsing for localStorage 
+        deltaBuffer = localStorage.SS_deltaBuffer.split(',');
+    } catch (e) { } 
 }
 
 function isTouchpad(deltaY) {
@@ -655,10 +626,14 @@ function isTouchpad(deltaY) {
     deltaBuffer.shift();
     clearTimeout(deltaBufferTimer);
     deltaBufferTimer = setTimeout(function () {
-        chrome.storage.local.set({ deltaBuffer: deltaBuffer });
+        try { // #46 Safari throws in private browsing for localStorage
+            localStorage.SS_deltaBuffer = deltaBuffer.join(',');
+        } catch (e) { }  
     }, 1000);
     var dpiScaledWheelDelta = deltaY > 120 && allDeltasDivisableBy(deltaY); // win64 
-    return !allDeltasDivisableBy(120) && !allDeltasDivisableBy(100) && !dpiScaledWheelDelta;
+    var tp = !allDeltasDivisableBy(120) && !allDeltasDivisableBy(100) && !dpiScaledWheelDelta;
+    if (deltaY < 50) return true;
+    return tp;
 } 
 
 function isDivisible(n, divisor) {
@@ -670,12 +645,6 @@ function allDeltasDivisableBy(divisor) {
             isDivisible(deltaBuffer[1], divisor) &&
             isDivisible(deltaBuffer[2], divisor));
 }
-
-chrome.storage.local.get('deltaBuffer', function (stored) {
-    if (stored.deltaBuffer) {
-        deltaBuffer = stored.deltaBuffer;
-    }
-});
 
 function isInsideYoutubeVideo(event) {
     var elem = event.target;
@@ -690,9 +659,40 @@ function isInsideYoutubeVideo(event) {
     return isControl;
 }
 
-function getScrollRoot() {
-    return document.scrollingElement || document.body; // scrolling root in WebKit
-}
+var requestFrame = (function () {
+      return (window.requestAnimationFrame       || 
+              window.webkitRequestAnimationFrame || 
+              window.mozRequestAnimationFrame    ||
+              function (callback, element, delay) {
+                 window.setTimeout(callback, delay || (1000/60));
+             });
+})();
+
+var MutationObserver = (window.MutationObserver || 
+                        window.WebKitMutationObserver ||
+                        window.MozMutationObserver);  
+
+var getScrollRoot = (function() {
+  var SCROLL_ROOT = document.scrollingElement;
+  return function() {
+    if (!SCROLL_ROOT) {
+      var dummy = document.createElement('div');
+      dummy.style.cssText = 'height:10000px;width:1px;';
+      document.body.appendChild(dummy);
+      var bodyScrollTop  = document.body.scrollTop;
+      var docElScrollTop = document.documentElement.scrollTop;
+      window.scrollBy(0, 3);
+      if (document.body.scrollTop != bodyScrollTop)
+        (SCROLL_ROOT = document.body);
+      else 
+        (SCROLL_ROOT = document.documentElement);
+      window.scrollBy(0, -3);
+      document.body.removeChild(dummy);
+    }
+    return SCROLL_ROOT;
+  };
+})();
+
 
 /***********************************************
  * PULSE (by Michael Herf)
@@ -731,10 +731,60 @@ function pulse(x) {
     return pulse_(x);
 }
 
-// new standard wheel event from Chrome 31+
+
+/***********************************************
+ * FIRST RUN
+ ***********************************************/
+
+var userAgent = window.navigator.userAgent;
+var isEdge    = /Edge/.test(userAgent); // thank you MS
+var isChrome  = /chrome/i.test(userAgent) && !isEdge; 
+var isSafari  = /safari/i.test(userAgent) && !isEdge; 
+var isMobile  = /mobile/i.test(userAgent);
+var isIEWin7  = /Windows NT 6.1/i.test(userAgent) && /rv:11/i.test(userAgent);
+var isOldSafari = isSafari && (/Version\/8/i.test(userAgent) || /Version\/9/i.test(userAgent));
+var isEnabledForBrowser = (isChrome || isSafari || isIEWin7) && !isMobile;
+
+var supportsPassive = false;
+try {
+  window.addEventListener("test", null, Object.defineProperty({}, 'passive', {
+    get: function () {
+            supportsPassive = true;
+        } 
+    }));
+} catch(e) {}
+
+var wheelOpt = supportsPassive ? { passive: false } : false;
 var wheelEvent = 'onwheel' in document.createElement('div') ? 'wheel' : 'mousewheel'; 
 
-addEvent(wheelEvent, wheel);
-addEvent('mousedown', mousedown);
-addEvent('keydown', keydown);
-addEvent('load', loaded);
+if (wheelEvent && isEnabledForBrowser) {
+    addEvent(wheelEvent, wheel, wheelOpt);
+    addEvent('mousedown', mousedown);
+    addEvent('load', init);
+}
+
+
+/***********************************************
+ * PUBLIC INTERFACE
+ ***********************************************/
+
+function SmoothScroll(optionsToSet) {
+    for (var key in optionsToSet)
+        if (defaultOptions.hasOwnProperty(key)) 
+            options[key] = optionsToSet[key];
+}
+SmoothScroll.destroy = cleanup;
+
+if (window.SmoothScrollOptions) // async API
+    SmoothScroll(window.SmoothScrollOptions);
+
+if (typeof define === 'function' && define.amd)
+    define(function() {
+        return SmoothScroll;
+    });
+else if ('object' == typeof exports)
+    module.exports = SmoothScroll;
+else
+    window.SmoothScroll = SmoothScroll;
+
+})();
